@@ -1,0 +1,7 @@
+{
+  "name": "Solar Coca-Cola - CD Diagnostic Tool",
+  "description": "Ferramenta de diagnóstico in loco para validação técnica de novos Centros de Distribuição Solar Coca-Cola, com checklist baseado no caderno de especificações e geração de plano de ação para o Go-Live.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
