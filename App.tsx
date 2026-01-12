@@ -4,29 +4,19 @@ import {
   Camera, 
   ArrowRight, 
   ChevronRight,
-  Printer,
   ArrowLeft,
   ClipboardList,
   Filter,
-  Check,
-  ChevronDown,
   Plus,
   Sparkles,
   Loader2,
   Calendar,
-  AlertTriangle,
   BarChart3,
-  ShieldCheck,
   CheckCircle,
-  XCircle,
-  AlertCircle,
   RefreshCw,
   X,
   UploadCloud,
-  Pencil,
   Trash2,
-  Clock,
-  Target,
   FolderOpen,
   Save,
   ImageIcon,
@@ -35,12 +25,11 @@ import {
   LayoutGrid,
   FileSpreadsheet,
   FileText,
-  GripVertical,
+  Move,
   Maximize,
   Minimize,
-  Move
+  Target
 } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
 import { SPECIFICATIONS as INITIAL_SPECS } from './constants';
 import { ComplianceStatus, DiagnosticState, CDInfo, DiagnosticItem, SpecificationItem, RiskLevel } from './types';
 import { Header } from './components/Header';
@@ -48,8 +37,7 @@ import { ComplianceButton } from './components/ComplianceButton';
 import { RiskSelector } from './components/RiskSelector';
 import { processImageHD } from './lib/imageProcessor';
 import { generateRequirements } from './lib/aiService';
-
-const STORAGE_KEY = 'solar_coca_cola_diagnostics_v1';
+import { saveDiagnosticToCloud, loadDiagnosticsFromCloud } from './lib/firebase';
 
 export default function App() {
   const [step, setStep] = useState<'HOME' | 'INFO' | 'CHECKLIST' | 'SUMMARY' | 'LOAD_LIST'>('HOME');
@@ -61,6 +49,7 @@ export default function App() {
   const [isGeneratingAI, setIsGeneratingAI] = useState(false);
   const [processingImage, setProcessingImage] = useState<string | null>(null);
   const [savedDiagnostics, setSavedDiagnostics] = useState<{id: string, name: string, date: string, partner: string}[]>([]);
+  const [isSyncing, setIsSyncing] = useState(false);
   
   const [mediaSelector, setMediaSelector] = useState<{ specId: string } | null>(null);
   const [cameraPreview, setCameraPreview] = useState<{ specId: string, dataUrl: string, file: File } | null>(null);
@@ -72,7 +61,6 @@ export default function App() {
   const [isGridView, setIsGridView] = useState(false);
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
-  // Configuração de estilo por slide
   const [slideConfig, setSlideConfig] = useState<Record<string, { fontSize: number, reverse: boolean }>>({});
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -85,21 +73,24 @@ export default function App() {
     items: {}
   });
 
+  const refreshList = useCallback(async () => {
+    setIsSyncing(true);
+    const data = await loadDiagnosticsFromCloud();
+    const list = Object.keys(data).map(id => ({
+      id,
+      name: data[id].info.name,
+      partner: data[id].info.partner,
+      date: data[id].info.date
+    }));
+    setSavedDiagnostics(list);
+    setIsSyncing(false);
+  }, []);
+
   useEffect(() => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      try {
-        const data = JSON.parse(raw);
-        const list = Object.keys(data).map(id => ({
-          id,
-          name: data[id].info.name,
-          partner: data[id].info.partner,
-          date: data[id].info.date
-        }));
-        setSavedDiagnostics(list);
-      } catch (e) { console.error(e); }
+    if (step === 'HOME' || step === 'LOAD_LIST') {
+      refreshList();
     }
-  }, [step]);
+  }, [step, refreshList]);
 
   const allSpecs = useMemo(() => [...INITIAL_SPECS, ...customSpecs], [customSpecs, INITIAL_SPECS]);
 
@@ -199,41 +190,40 @@ export default function App() {
     finally { setProcessingImage(null); }
   };
 
-  const handleSaveToStorage = () => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const data = raw ? JSON.parse(raw) : {};
+  const handleSaveToCloud = async () => {
+    if (!diagnostic.info.name) return alert("Dê um nome à unidade antes de salvar!");
+    setIsSyncing(true);
     const id = diagnostic.info.name.replace(/\s+/g, '_').toLowerCase() + '_' + Date.now();
-    data[id] = { ...diagnostic, customSpecs };
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-    alert("Diagnóstico salvo!");
-    setStep('HOME');
-  };
-
-  const handleLoadDiagnostic = (id: string) => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const data = JSON.parse(raw);
-      const saved = data[id];
-      if (saved) {
-        setDiagnostic(saved);
-        if (saved.customSpecs) setCustomSpecs(saved.customSpecs);
-        setStep('SUMMARY');
-      }
+    const success = await saveDiagnosticToCloud(id, { ...diagnostic, customSpecs });
+    setIsSyncing(false);
+    
+    if (success) {
+      alert("Sincronizado com a nuvem com sucesso!");
+      setStep('HOME');
+    } else {
+      alert("Erro ao sincronizar.");
     }
   };
 
-  const handleOpenPresentation = (id: string) => {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) {
-      const data = JSON.parse(raw);
-      const saved = data[id];
-      if (saved) {
-        const nonCompliantSpecs = [...INITIAL_SPECS, ...(saved.customSpecs || [])]
-          .filter(s => saved.items[s.id]?.status === ComplianceStatus.NAO_CONFORME);
-        setPresentationOrder(nonCompliantSpecs.map(s => s.id));
-        setPresentationMode({ isOpen: true, diagnostic: saved });
-        setOpenMenuId(null);
-      }
+  const handleLoadDiagnostic = async (id: string) => {
+    const data = await loadDiagnosticsFromCloud();
+    const saved = data[id];
+    if (saved) {
+      setDiagnostic(saved);
+      if (saved.customSpecs) setCustomSpecs(saved.customSpecs);
+      setStep('SUMMARY');
+    }
+  };
+
+  const handleOpenPresentation = async (id: string) => {
+    const data = await loadDiagnosticsFromCloud();
+    const saved = data[id];
+    if (saved) {
+      const nonCompliantSpecs = [...INITIAL_SPECS, ...(saved.customSpecs || [])]
+        .filter(s => saved.items[s.id]?.status === ComplianceStatus.NAO_CONFORME);
+      setPresentationOrder(nonCompliantSpecs.map(s => s.id));
+      setPresentationMode({ isOpen: true, diagnostic: saved });
+      setOpenMenuId(null);
     }
   };
 
@@ -263,7 +253,6 @@ export default function App() {
     const length = text.length;
     if (length > 400) return baseSize * 0.5;
     if (length > 250) return baseSize * 0.7;
-    if (length > 150) return baseSize * 0.85;
     return baseSize;
   };
 
@@ -294,11 +283,12 @@ export default function App() {
             <div className="absolute -bottom-2 -right-2 bg-green-500 text-white p-3 rounded-full shadow-lg border-4 border-white"><CheckCircle size={32} /></div>
           </div>
           <h2 className="text-4xl font-black text-gray-900 mb-2 px-4 leading-tight tracking-tight uppercase">Diagnóstico CD</h2>
-          <div className="bg-black text-white px-6 py-2 rounded-full text-xs font-black tracking-[0.3em] uppercase mb-8 mx-auto inline-block shadow-lg border-b-4 border-red-600">PROJETO NMA</div>
+          <div className="bg-black text-white px-6 py-2 rounded-full text-xs font-black tracking-[0.3em] uppercase mb-8 mx-auto inline-block shadow-lg border-b-4 border-red-600">SINCRONIZADO NA NUVEM</div>
           <div className="flex flex-col gap-4 w-full max-w-xs mt-4">
             <button onClick={() => setStep('INFO')} className="bg-[#E01E2B] text-white py-5 rounded-2xl font-black text-xl shadow-xl hover:bg-red-700 transition-all flex items-center justify-center gap-4 active:scale-95 group">Novo Diagnóstico <ArrowRight size={24} /></button>
             <button onClick={() => setStep('LOAD_LIST')} className="bg-white text-gray-700 py-5 rounded-2xl font-black text-xl shadow-md border-2 border-gray-100 flex items-center justify-center gap-4 active:scale-95 hover:bg-gray-50 transition-all">Abrir Diagnóstico <FolderOpen size={24} className="text-red-600" /></button>
           </div>
+          {isSyncing && <div className="mt-4 flex items-center gap-2 text-xs font-black text-red-600 animate-pulse uppercase"><RefreshCw size={14} className="animate-spin" /> Sincronizando...</div>}
         </main>
       )}
 
@@ -306,7 +296,10 @@ export default function App() {
         <>
           <div className="p-4 bg-white border-b sticky top-[64px] z-40">
              <div className="flex items-center gap-2 text-gray-400 mb-1 cursor-pointer hover:text-red-600" onClick={() => setStep('HOME')}><ArrowLeft size={16} /> <span className="text-xs font-bold uppercase tracking-wider">Voltar</span></div>
-             <h3 className="text-lg font-bold text-gray-800 uppercase tracking-tight">Diagnósticos Salvos</h3>
+             <div className="flex items-center justify-between">
+                <h3 className="text-lg font-bold text-gray-800 uppercase tracking-tight">Diagnósticos na Nuvem</h3>
+                <button onClick={refreshList} className="p-2 text-red-600"><RefreshCw size={18} className={isSyncing ? 'animate-spin' : ''} /></button>
+             </div>
           </div>
           <main className="flex-1 p-6 space-y-4 max-w-2xl mx-auto w-full py-8 text-left">
             {savedDiagnostics.length > 0 ? savedDiagnostics.map(diag => (
@@ -326,7 +319,7 @@ export default function App() {
                   </div>
                 )}
               </div>
-            )) : <div className="text-center py-20 text-gray-400 font-bold uppercase text-xs tracking-widest">Nenhum diagnóstico salvo</div>}
+            )) : <div className="text-center py-20 text-gray-400 font-bold uppercase text-xs tracking-widest">Nenhum diagnóstico na nuvem</div>}
           </main>
         </>
       )}
@@ -380,7 +373,11 @@ export default function App() {
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                        <div className="space-y-4">
-                          <div className="flex flex-col gap-1.5"><span className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Status</span><div className="flex gap-2">{Object.values(ComplianceStatus).map((status) => (<ComplianceButton key={status} status={status} selected={currentItem?.status === status} onClick={() => handleItemUpdate(spec.id, { status })} />))}</div></div>
+                          <div className="flex flex-col gap-1.5"><span className="text-[10px] font-black text-gray-400 uppercase tracking-widest ml-1">Status</span><div className="flex gap-2">
+                            {Object.values(ComplianceStatus).map((status) => (
+                              <ComplianceButton key={status as string} status={status as ComplianceStatus} selected={currentItem?.status === status} onClick={() => handleItemUpdate(spec.id, { status: status as ComplianceStatus })} />
+                            ))}
+                          </div></div>
                           <RiskSelector selected={currentItem?.risk} onChange={(risk) => handleItemUpdate(spec.id, { risk })} />
                        </div>
                        <textarea placeholder="Observações..." value={currentItem?.observations || ''} onChange={(e) => handleItemUpdate(spec.id, { observations: e.target.value })} className="w-full p-4 border-2 border-gray-100 rounded-2xl text-sm outline-none focus:border-red-300 min-h-[100px] font-medium" />
@@ -411,13 +408,13 @@ export default function App() {
 
       {step === 'SUMMARY' && (
         <>
-          <div className="bg-black text-white p-10 print:text-black print:bg-white print:border-b-4 print:border-red-600 text-left">
+          <div className="bg-black text-white p-10 text-left">
             <h3 className="text-5xl font-black uppercase tracking-tighter mb-2 leading-none">{diagnostic.info.name}</h3>
             <div className="flex items-center gap-4 text-left"><p className="text-xl font-bold text-red-500 uppercase tracking-widest">{diagnostic.info.partner}</p><div className="h-6 w-px bg-white/20" /><p className="text-sm font-bold text-white/60 uppercase">Go-Live: {new Date(diagnostic.info.goliveDate + 'T12:00:00').toLocaleDateString('pt-BR')}</p></div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 mt-8">
-              <div className="bg-white/10 p-4 rounded-3xl border border-white/10 text-left"><span className="block text-[8px] font-black uppercase tracking-widest opacity-60 mb-1">Global</span><span className="text-4xl font-black text-green-400 leading-none">{Math.round((Object.values(diagnostic.items).filter(i => i.status === ComplianceStatus.CONFORME).length / allSpecs.length) * 100)}%</span></div>
-              <div className="bg-green-600/20 p-4 rounded-3xl border border-green-500/20 text-left"><span className="block text-[8px] font-black uppercase tracking-widest opacity-60 mb-1">Conformes</span><span className="text-4xl font-black text-green-500 leading-none">{Object.values(diagnostic.items).filter(i => i.status === ComplianceStatus.CONFORME).length}</span></div>
-              <div className="bg-red-600/20 p-4 rounded-3xl border border-red-500/20 text-left"><span className="block text-[8px] font-black uppercase tracking-widest opacity-60 mb-1 text-left">Pendências</span><span className="text-4xl font-black text-red-500 leading-none">{Object.values(diagnostic.items).filter(i => i.status === ComplianceStatus.NAO_CONFORME).length}</span></div>
+              <div className="bg-white/10 p-4 rounded-3xl border border-white/10 text-left"><span className="block text-[8px] font-black uppercase tracking-widest opacity-60 mb-1">Global</span><span className="text-4xl font-black text-green-400 leading-none">{Math.round(((Object.values(diagnostic.items) as DiagnosticItem[]).filter(i => i.status === ComplianceStatus.CONFORME).length / allSpecs.length) * 100)}%</span></div>
+              <div className="bg-green-600/20 p-4 rounded-3xl border border-green-500/20 text-left"><span className="block text-[8px] font-black uppercase tracking-widest opacity-60 mb-1">Conformes</span><span className="text-4xl font-black text-green-500 leading-none">{(Object.values(diagnostic.items) as DiagnosticItem[]).filter(i => i.status === ComplianceStatus.CONFORME).length}</span></div>
+              <div className="bg-red-600/20 p-4 rounded-3xl border border-red-500/20 text-left"><span className="block text-[8px] font-black uppercase tracking-widest opacity-60 mb-1 text-left">Pendências</span><span className="text-4xl font-black text-red-500 leading-none">{(Object.values(diagnostic.items) as DiagnosticItem[]).filter(i => i.status === ComplianceStatus.NAO_CONFORME).length}</span></div>
             </div>
           </div>
           <main className="flex-1 p-6 space-y-8 max-w-6xl mx-auto w-full py-12 text-left pb-32">
@@ -436,16 +433,22 @@ export default function App() {
                       <h5 className="font-black text-2xl uppercase tracking-tight leading-none">{spec.title}</h5>
                       <div className="bg-gray-50 p-4 rounded-2xl border border-gray-100 text-left"><span className="text-[10px] font-black uppercase text-gray-400 mb-2 block">Requisitos:</span><ul className="space-y-1.5">{spec.requirements.map((req, i) => (<li key={i} className="text-xs font-bold text-gray-700 flex items-start gap-2"><div className="w-1.5 h-1.5 bg-red-500 rounded-full mt-1 shrink-0" />{req}</li>))}</ul></div>
                       <div className="bg-gray-50 p-6 rounded-2xl italic font-bold text-gray-700 border border-dashed border-gray-200">"{item.observations || 'Sem observações.'}"</div>
-                      <div className="flex flex-col gap-2"><div className="flex items-center gap-3 ml-1"><label className="block text-[10px] font-black text-red-600 uppercase tracking-widest flex items-center gap-1.5"><Calendar size={12} /> Prazo</label><span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border ${labelColor}`}>{statusLabel}</span></div><input type="date" value={deadline} onChange={(e) => handleItemUpdate(spec.id, { deadline: e.target.value })} className="p-4 bg-white border-2 border-gray-100 rounded-2xl font-bold text-gray-700 w-full lg:max-w-xs" /></div>
+                      <div className="flex flex-col gap-2">
+                        <div className="flex items-center gap-3 ml-1">
+                          <label className="block text-[10px] font-black text-red-600 uppercase tracking-widest flex items-center gap-1.5"><Calendar size={12} /> Prazo</label>
+                          <span className={`text-[9px] font-black uppercase px-2 py-0.5 rounded border ${labelColor}`}>{statusLabel}</span>
+                        </div>
+                        <input type="date" value={deadline} onChange={(e) => handleItemUpdate(spec.id, { deadline: e.target.value })} className="p-4 bg-white border-2 border-gray-100 rounded-2xl font-bold text-gray-700 w-full lg:max-w-xs" />
+                      </div>
                     </div>
                     {item.photos.length > 0 && <div className="lg:w-72 shrink-0 grid grid-cols-2 lg:grid-cols-1 gap-2">{item.photos.slice(0, 2).map((photo, i) => (<div key={i} className="aspect-square rounded-3xl overflow-hidden shadow-inner bg-gray-50 border-4 border-white"><img src={photo} className="w-full h-full object-cover" /></div>))}</div>}
                   </div>
                 );
               })}
             </div>
-            <div className="pt-12 grid grid-cols-1 sm:grid-cols-2 gap-4 print:hidden">
+            <div className="pt-12 grid grid-cols-1 sm:grid-cols-2 gap-4">
               <button onClick={() => setStep('CHECKLIST')} className="bg-white text-gray-400 border-2 border-gray-100 py-6 rounded-3xl font-black uppercase flex items-center justify-center gap-3"><ArrowLeft size={20} /> Revisar</button>
-              <button onClick={handleSaveToStorage} className="bg-black text-white py-6 rounded-3xl font-black uppercase flex items-center justify-center gap-3 shadow-xl"><Save size={20} className="text-red-600" /> Salvar</button>
+              <button disabled={isSyncing} onClick={handleSaveToCloud} className="bg-black text-white py-6 rounded-3xl font-black uppercase flex items-center justify-center gap-3 shadow-xl active:scale-95 disabled:opacity-50">{isSyncing ? <Loader2 className="animate-spin" /> : <Save size={20} className="text-red-600" />} Sincronizar na Nuvem</button>
             </div>
           </main>
         </>
@@ -639,39 +642,6 @@ export default function App() {
                     <button disabled={currentSlideIndex === presentationOrder.length - 1} onClick={() => setCurrentSlideIndex(prev => prev + 1)} className="p-4 bg-white/80 backdrop-blur-md rounded-full shadow-2xl text-red-600 disabled:opacity-0 transition-all hover:scale-110 active:scale-90 no-print"><ArrowRight size={32} strokeWidth={3} /></button>
                   </div>
                 )}
-
-                {/* IMPRESSÃO DE TODOS OS SLIDES - FORMATO PDF */}
-                <div className="hidden print:block">
-                  {presentationOrder.map((id) => {
-                    const spec = [...INITIAL_SPECS, ...(presentationMode.diagnostic!.customSpecs || [])].find(s => s.id === id);
-                    const item = presentationMode.diagnostic!.items[id];
-                    const config = slideConfig[id] || { fontSize: 24, reverse: false };
-                    if (!spec || !item) return null;
-                    const dynamicObsSize = getDynamicFontSize(item.observations || '', config.fontSize);
-                    return (
-                      <div key={`p-${id}`} className={`presentation-page flex flex-col lg:flex-row gap-16 ${config.reverse ? 'lg:flex-row-reverse' : ''} p-20 bg-white`}>
-                        <div className="flex-1 flex flex-col gap-6">
-                          <h2 className="text-3xl font-black uppercase text-gray-900 mb-8 border-l-8 border-red-600 pl-8">{spec.title}</h2>
-                          {item.photos[0] && <img src={item.photos[0]} className="w-full rounded-[40px] aspect-video object-cover border-8 border-gray-50 shadow-sm" />}
-                        </div>
-                        <div className="flex-1 flex flex-col justify-center space-y-10">
-                          <p className="font-black text-gray-800 uppercase italic leading-tight" style={{ fontSize: `${dynamicObsSize}px` }}>{item.observations}</p>
-                          <div className="px-4">
-                            <h4 className="text-[10px] font-black uppercase tracking-[0.3em] text-red-600 mb-4">Requisitos:</h4>
-                            <ul className="space-y-2">
-                              {spec.requirements.map((req, i) => (
-                                <li key={i} className="text-sm font-bold text-gray-500">{req}</li>
-                              ))}
-                            </ul>
-                          </div>
-                          <div className="mt-auto">
-                             <span className="text-[10px] font-black uppercase text-red-600">Prazo Final: {new Date((item.deadline || presentationMode.diagnostic!.info.goliveDate) + 'T12:00:00').toLocaleDateString('pt-BR')}</span>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
               </div>
             ) : (
               <div className="w-full max-w-7xl bg-white rounded-[40px] shadow-xl flex flex-col h-[70vh] animate-in zoom-in-95">
