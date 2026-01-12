@@ -1,44 +1,89 @@
 
-import { DiagnosticState, SpecificationItem } from '../types';
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+import { 
+  getFirestore, 
+  doc, 
+  setDoc, 
+  getDocs, 
+  collection,
+  serverTimestamp,
+  enableIndexedDbPersistence
+} from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
 
 /**
- * SERVIÇO DE SINCRONIZAÇÃO EM NUVEM - SOLAR COCA-COLA
+ * CONFIGURAÇÃO FIREBASE SOLAR COCA-COLA
  * 
- * Para produção real:
- * Substitua o localStorage por chamadas ao Firebase Firestore.
+ * ATENÇÃO: Você DEVE copiar os valores do seu Console Firebase:
+ * Project Settings > General > Your Apps > SDK Setup and Configuration
  */
+const firebaseConfig = {
+  apiKey: "AIzaSyBYjFL36qnX7QlyKQQURW17qhNiUNzavR0",
+  authDomain: "diagnosticocd-app.firebaseapp.com",
+  projectId: "diagnosticocd-app", // Substitua pelo ID que aparece no seu console
+  storageBucket: "diagnosticocd-app.firebasestorage.app",
+  messagingSenderId: "1022779331462",
+  appId: "1:1022779331462:web:367ef3772ba22ebf4bd207"
+};
 
-const CLOUD_STORAGE_KEY = 'solar_cloud_sync_v1';
+// Inicializa o Firebase
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+// Habilita persistência offline para evitar erros de conexão imediata
+enableIndexedDbPersistence(db).catch((err) => {
+    if (err.code === 'failed-precondition') {
+        console.warn("Persistência falhou: multiplas abas abertas.");
+    } else if (err.code === 'unimplemented') {
+        console.warn("O navegador não suporta persistência.");
+    }
+});
 
 export const saveDiagnosticToCloud = async (id: string, data: any) => {
   try {
-    // No Firebase Real: await setDoc(doc(db, "diagnostics", id), data);
-    const raw = localStorage.getItem(CLOUD_STORAGE_KEY) || '{}';
-    const cloudData = JSON.parse(raw);
-    
-    cloudData[id] = { 
-      ...data, 
-      lastUpdate: new Date().toISOString() 
-    };
-    
-    localStorage.setItem(CLOUD_STORAGE_KEY, JSON.stringify(cloudData));
-    
-    // Simula um delay de rede
-    await new Promise(r => setTimeout(r, 800));
+    const docRef = doc(db, "diagnostics", id);
+    await setDoc(docRef, {
+      ...data,
+      lastUpdate: serverTimestamp()
+    });
     return true;
-  } catch (e) {
-    console.error("Erro ao sincronizar com nuvem:", e);
+  } catch (e: any) {
+    console.error("Erro ao salvar no Firestore:", e);
+    
+    // Se o erro for permissão negada, avisa o usuário sobre as Rules
+    if (e.message?.includes("permission-denied")) {
+        alert("Erro de Permissão: Verifique se você configurou as 'Rules' no console do Firebase para 'allow read, write: if true;'.");
+    }
+
+    // Fallback para localStorage
+    localStorage.setItem(`offline_${id}`, JSON.stringify(data));
     return false;
   }
 };
 
 export const loadDiagnosticsFromCloud = async () => {
   try {
-    // No Firebase Real: const querySnapshot = await getDocs(collection(db, "diagnostics"));
-    const raw = localStorage.getItem(CLOUD_STORAGE_KEY) || '{}';
-    return JSON.parse(raw);
-  } catch (e) {
-    console.error("Erro ao carregar da nuvem:", e);
-    return {};
+    const querySnapshot = await getDocs(collection(db, "diagnostics"));
+    const data: Record<string, any> = {};
+    querySnapshot.forEach((doc) => {
+      data[doc.id] = doc.data();
+    });
+    return data;
+  } catch (e: any) {
+    console.error("Erro ao carregar do Firestore:", e);
+    
+    // Recupera dados salvos localmente caso falhe a conexão
+    const offlineData: Record<string, any> = {};
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key?.startsWith('offline_')) {
+        const id = key.replace('offline_', '');
+        try {
+            offlineData[id] = JSON.parse(localStorage.getItem(key) || '{}');
+        } catch (err) {
+            console.error("Erro ao ler item offline", key);
+        }
+      }
+    }
+    return offlineData;
   }
 };
